@@ -47,3 +47,13 @@ pub use notes::balance::{
 };
 pub use notes::owned::map as map_owned;
 pub use notes::pick::notes as pick_notes;
+
+/// ABI version for native (e.g. Android) cdylib. When built as cdylib for non-wasm, the only C exports are in the wasm-only `ffi` module, so LTO strips the crate.
+/// Calling into keys here forces the linker to keep the full library in libdusk_wallet_core.so.
+#[cfg(not(target_family = "wasm"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn dusk_wallet_core_abi_version() -> u32 {
+    const ZERO: crate::Seed = [0u8; 64];
+    let _ = crate::keys::derive_phoenix_pk(&ZERO, 0);
+    0u32
+}
