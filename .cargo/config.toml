@@ -1,2 +1,11 @@
 [build]
 target-dir = "target"
+
+# Android: set linkers via env so paths stay local. Example (PowerShell):
+#   $ndk = "$env:ANDROID_HOME/ndk/<version>"  # or ANDROID_NDK_HOME
+#   $p = "$ndk/toolchains/llvm/prebuilt/windows-x86_64/bin"
+#   $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = "$p/aarch64-linux-android24-clang.cmd"
+#   $env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER = "$p/armv7a-linux-androideabi24-clang.cmd"
+#   $env:CARGO_TARGET_I686_LINUX_ANDROID_LINKER = "$p/i686-linux-android24-clang.cmd"
+#   $env:CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER = "$p/x86_64-linux-android24-clang.cmd"
+# Then: cargo build --release -p dusk-wallet-core --target aarch64-linux-android (etc.)
