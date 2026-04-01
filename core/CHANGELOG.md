@@ -7,17 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-02-27
+
+### Added
+
+- Add `sha256` and `verify_kzg_proof` ABI host queries [#3993]
+- Add `secp256k1_recover` ABI host query (EVM `ecrecover` primitive) [#4012]
+- Add `transfer::phoenix_fee_check`
+- Add `phoenix_refund_check` for fee stealth address binding
+
 ### Changed
 
 - Update to edition 2024
 - Replace nightly `cfg_eval`/`serde_as` with stable `serde(with)` attributes
 - Remove nightly `#![feature(cfg_eval)]` and `#![feature(const_fn_floating_point_arithmetic)]`
 - Update MSRV to 1.85
-
-### Added
-
-- Add `sha256` and `verify_kzg_proof` ABI host queries [#3993]
-- Add `secp256k1_recover` ABI host query (EVM `ecrecover` primitive) [#4012]
 
 ## [1.4.1] - 2026-01-23
 
@@ -86,7 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#3341]: https://github.com/dusk-network/rusk/issues/3341
 [#2773]: https://github.com/dusk-network/rusk/issues/2773
 
-[Unreleased]: https://github.com/dusk-network/rusk/compare/dusk-core-1.4.1...HEAD
+[Unreleased]: https://github.com/dusk-network/rusk/compare/dusk-core-1.6.0...HEAD
+[1.6.0]: https://github.com/dusk-network/rusk/compare/dusk-core-1.4.1...dusk-core-1.6.0
 [1.4.1]: https://github.com/dusk-network/rusk/compare/dusk-core-1.4.0...dusk-core-1.4.1
 [1.4.0]: https://github.com/dusk-network/rusk/compare/dusk-core-1.3.0...dusk-core-1.4.0
 [1.3.0]: https://github.com/dusk-network/rusk/compare/dusk-core-1.2.1...dusk-core-1.3.0

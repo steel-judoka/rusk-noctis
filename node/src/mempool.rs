@@ -108,6 +108,21 @@ impl From<TxPreconditionError> for TxAcceptanceError {
             TxPreconditionError::BlobTooMany(n) => {
                 TxAcceptanceError::BlobTooMany(n)
             }
+            TxPreconditionError::PhoenixFeeOverflow => {
+                TxAcceptanceError::VerificationFailed(
+                    "phoenix fee overflow".into(),
+                )
+            }
+            TxPreconditionError::PhoenixFeeTampered => {
+                TxAcceptanceError::VerificationFailed(
+                    "phoenix fee tampered".into(),
+                )
+            }
+            TxPreconditionError::PhoenixFeeRefundMismatch => {
+                TxAcceptanceError::VerificationFailed(
+                    "phoenix fee refund stealth address mismatch".into(),
+                )
+            }
         }
     }
 }
@@ -324,6 +339,12 @@ impl MempoolSrv {
                 }
             }
 
+            tx.inner.phoenix_fee_check()?;
+
+            if vm.phoenix_refund_check_active(tip_height) {
+                tx.inner.phoenix_refund_check()?;
+            }
+
             // Check deployment tx
             if tx.inner.deploy().is_some() {
                 let min_deployment_gas_price = vm.min_deployment_gas_price();
@@ -392,7 +413,7 @@ impl MempoolSrv {
 
         // VM Preverify call
         let preverification_data =
-            vm.read().await.preverify(tx).map_err(|e| {
+            vm.read().await.preverify(tx, tip_height).map_err(|e| {
                 TxAcceptanceError::VerificationFailed(format!("{e}"))
             })?;
 

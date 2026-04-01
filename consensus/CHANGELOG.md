@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-02-27
+
 ### Changed
 
 - Update to edition 2024
@@ -15,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fix mismatched lifetime syntax in `Cluster::iter`
+- Broadcast the computed Quorum in open consensus mode instead of rebroadcasting the inbound message
+- Validate `collect_from_past` ratification vote consistency against attached `ValidationResult`
+- Compute supermajority quorum threshold with integer arithmetic to avoid float precision errors
 
 ## [1.4.0] - 2025-11-06
 
@@ -51,10 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#3543]: https://github.com/dusk-network/rusk/issues/3543
 [#3828]: https://github.com/dusk-network/rusk/issues/3828
 
-[Unreleased]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.4.0...HEAD
+[Unreleased]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.6.0...HEAD
+[1.6.0]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.4.0...dusk-consensus-1.6.0
 [1.4.0]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.3.0...dusk-consensus-1.4.0
 [1.3.0]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.2.0...dusk-consensus-1.3.0
 [1.2.0]: https://github.com/dusk-network/rusk/compare/dusk-consensus-1.0.1...dusk-consensus-1.2.0
 [1.0.1]: https://github.com/dusk-network/rusk/compare/consensus-1.0.0...dusk-consensus-1.0.1
 [0.1.0]: https://github.com/dusk-network/rusk/tree/consensus-1.0.0
-

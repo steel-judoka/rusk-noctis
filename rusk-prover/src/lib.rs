@@ -20,7 +20,7 @@ use dusk_core::Error;
 use dusk_core::transfer::phoenix::{
     NOTES_TREE_DEPTH, Prove, TxCircuit, TxCircuitVec,
 };
-use dusk_plonk::prelude::Prover as PlonkProver;
+use dusk_plonk::prelude::{PlonkVersion, Prover as PlonkProver};
 use once_cell::sync::Lazy;
 
 static TX_CIRCUIT_1_2_PROVER: Lazy<PlonkProver> =
@@ -35,12 +35,33 @@ static TX_CIRCUIT_3_2_PROVER: Lazy<PlonkProver> =
 static TX_CIRCUIT_4_2_PROVER: Lazy<PlonkProver> =
     Lazy::new(|| fetch_prover("TxCircuitFourTwo"));
 
+fn plonk_prove_version_from_mode(mode: Option<&str>) -> PlonkVersion {
+    match mode {
+        Some(mode)
+            if mode.eq_ignore_ascii_case("v2")
+                || mode.eq_ignore_ascii_case("legacy") =>
+        {
+            PlonkVersion::V2
+        }
+        _ => PlonkVersion::V3,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct LocalProver;
 
 impl Prove for LocalProver {
     fn prove(&self, tx_circuit_vec_bytes: &[u8]) -> Result<Vec<u8>, Error> {
         let tx_circuit_vec = TxCircuitVec::from_slice(tx_circuit_vec_bytes)?;
+
+        // Proving mode is chosen by the prover service. Default is V3 and can
+        // be switched to V2 explicitly for legacy proving.
+        #[cfg(feature = "std")]
+        let plonk_version = plonk_prove_version_from_mode(
+            std::env::var("RUSK_PLONK_PROVE_MODE").ok().as_deref(),
+        );
+        #[cfg(not(feature = "std"))]
+        let plonk_version = plonk_prove_version_from_mode(None);
 
         #[cfg(not(feature = "no_random"))]
         let rng = &mut rand::rngs::OsRng;
@@ -57,18 +78,30 @@ impl Prove for LocalProver {
         );
 
         let (proof, _pi) = match tx_circuit_vec.input_notes_info.len() {
-            1 => TX_CIRCUIT_1_2_PROVER
-                .prove(rng, &create_circuit::<1>(tx_circuit_vec)?)
-                .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?,
-            2 => TX_CIRCUIT_2_2_PROVER
-                .prove(rng, &create_circuit::<2>(tx_circuit_vec)?)
-                .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?,
-            3 => TX_CIRCUIT_3_2_PROVER
-                .prove(rng, &create_circuit::<3>(tx_circuit_vec)?)
-                .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?,
-            4 => TX_CIRCUIT_4_2_PROVER
-                .prove(rng, &create_circuit::<4>(tx_circuit_vec)?)
-                .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?,
+            1 => {
+                let circuit = create_circuit::<1>(tx_circuit_vec)?;
+                TX_CIRCUIT_1_2_PROVER
+                    .prove_with_version(rng, &circuit, plonk_version)
+                    .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?
+            }
+            2 => {
+                let circuit = create_circuit::<2>(tx_circuit_vec)?;
+                TX_CIRCUIT_2_2_PROVER
+                    .prove_with_version(rng, &circuit, plonk_version)
+                    .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?
+            }
+            3 => {
+                let circuit = create_circuit::<3>(tx_circuit_vec)?;
+                TX_CIRCUIT_3_2_PROVER
+                    .prove_with_version(rng, &circuit, plonk_version)
+                    .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?
+            }
+            4 => {
+                let circuit = create_circuit::<4>(tx_circuit_vec)?;
+                TX_CIRCUIT_4_2_PROVER
+                    .prove_with_version(rng, &circuit, plonk_version)
+                    .map_err(|e| Error::PhoenixProver(format!("{e:?}")))?
+            }
             _ => return Err(Error::InvalidData),
         };
 
@@ -112,6 +145,21 @@ fn create_circuit<const I: usize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prove_mode_mapping() {
+        let cases = [
+            (None, PlonkVersion::V3),
+            (Some("current"), PlonkVersion::V3),
+            (Some("random"), PlonkVersion::V3),
+            (Some("v2"), PlonkVersion::V2),
+            (Some("legacy"), PlonkVersion::V2),
+        ];
+
+        for (mode, expected) in cases {
+            assert_eq!(plonk_prove_version_from_mode(mode), expected);
+        }
+    }
 
     #[test]
     fn test_prove_tx_circuit() {

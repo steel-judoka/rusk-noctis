@@ -1,6 +1,6 @@
 [package]
 name = "dusk-wallet-core"
-version = "1.4.1-alpha.1"
+version = "1.6.0"
 description = "The core functionality of the Dusk wallet"
 repository = "https://github.com/dusk-network/rusk"
 
@@ -22,7 +22,7 @@ hkdf = { workspace = true }
 rand = { workspace = true }
 ff = { workspace = true }
 dusk-core = { workspace = true }
-rkyv = { workspace = true, features = ["alloc"] }
+rkyv = { workspace = true, features = ["alloc", "validation"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 dlmalloc = { workspace = true, features = ["global"] }

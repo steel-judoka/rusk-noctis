@@ -93,6 +93,13 @@ pub enum TxPreconditionError {
     BlobEmpty,
     /// Too many blobs attached to the transaction.
     BlobTooMany(usize),
+    /// Phoenix fee overflow.
+    PhoenixFeeOverflow,
+    /// Phoenix fee tampered.
+    PhoenixFeeTampered,
+    /// Phoenix fee refund stealth address does not match the proven change
+    /// note.
+    PhoenixFeeRefundMismatch,
 }
 
 impl TxPreconditionError {
@@ -115,6 +122,11 @@ impl TxPreconditionError {
             }
             TxPreconditionError::BlobTooMany(_) => {
                 "too many blobs in the transaction"
+            }
+            TxPreconditionError::PhoenixFeeOverflow => "phoenix fee overflow",
+            TxPreconditionError::PhoenixFeeTampered => "phoenix fee tampered",
+            TxPreconditionError::PhoenixFeeRefundMismatch => {
+                "phoenix fee refund stealth address mismatch"
             }
         }
         .to_string()

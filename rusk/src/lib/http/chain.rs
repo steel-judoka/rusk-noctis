@@ -32,11 +32,31 @@ use tracing::error;
 
 use super::event::RequestData;
 use super::*;
-use crate::node::RuskNode;
+use crate::node::{RuskNode, set_vm_host_context};
 use crate::{VERSION, VERSION_BUILD};
 
 const GQL_VAR_PREFIX: &str = "rusk-gqlvar-";
 type GraphqlSchema = Schema<Query, EmptyMutation, EmptySubscription>;
+
+async fn preverify_tx(node: &RuskNode, data: &[u8]) -> HttpResult<Transaction> {
+    let tx: Transaction = ProtocolTransaction::from_slice(data)
+        .map_err(|e| HttpError::invalid_input(format!("Data: {e:?}")))?
+        .into();
+
+    let db = node.inner().database();
+    let vm = node.inner().vm_handler();
+
+    MempoolSrv::check_tx(&db, &vm, &tx, true, usize::MAX)
+        .await
+        .map_err(|e| {
+            let err_msg =
+                format!("Tx {} not accepted: {e}", hex::encode(tx.id()));
+            error!("{err_msg}");
+            HttpError::internal(err_msg)
+        })?;
+
+    Ok(tx)
+}
 
 fn variables_from_headers(headers: &Map<String, Value>) -> Variables {
     let mut var = Variables::default();
@@ -184,28 +204,13 @@ impl RuskNode {
     }
 
     async fn handle_preverify(&self, data: &[u8]) -> HttpResult<ResponseData> {
-        let tx = dusk_core::transfer::Transaction::from_slice(data)
-            .map_err(|e| HttpError::invalid_input(format!("Data: {e:?}")))?;
-        let db = self.inner().database();
-        let vm = self.inner().vm_handler();
-        let tx = tx.into();
-
-        MempoolSrv::check_tx(&db, &vm, &tx, true, usize::MAX)
-            .await
-            .map_err(|e| {
-                let err_msg =
-                    format!("Tx {} not accepted: {e}", hex::encode(tx.id()));
-                error!("{err_msg}");
-                HttpError::internal(err_msg)
-            })?;
-
+        preverify_tx(self, data).await?;
         Ok(ResponseData::new(DataType::None))
     }
 
     async fn propagate_tx(&self, tx: &[u8]) -> HttpResult<ResponseData> {
-        let tx: Transaction = ProtocolTransaction::from_slice(tx)
-            .map_err(|e| HttpError::invalid_input(format!("Data: {e:?}")))?
-            .into();
+        let tx = preverify_tx(self, tx).await?;
+
         let tx_message = tx.into();
 
         let network = self.network();
@@ -307,7 +312,7 @@ impl RuskNode {
         let tx = ProtocolTransaction::from_slice(tx).map_err(|e| {
             HttpError::invalid_input(format!("Invalid transaction: {e:?}"))
         })?;
-        let (config, mut session) = {
+        let (config, mut session, _plonk_version_guard, _hard_fork_guard) = {
             let vm_handler = self.inner().vm_handler();
             let vm_handler = vm_handler.read().await;
             if tx.gas_limit() > vm_handler.get_block_gas_limit() {
@@ -319,8 +324,10 @@ impl RuskNode {
                     HttpError::database(format!("Failed to load the tip: {e}"))
                 })?
                 .ok_or_else(|| HttpError::database("Could not find the tip"))?;
-            let height = tip.header.height;
+            let height = tip.header.height.saturating_add(1);
             let config = vm_handler.vm_config.to_execution_config(height);
+            let (plonk_version_guard, hard_fork_guard) =
+                set_vm_host_context(&vm_handler.vm_config, height);
             let session = vm_handler
                 .new_block_session(height, vm_handler.tip.read().current)
                 .map_err(|e| {
@@ -328,7 +335,7 @@ impl RuskNode {
                         "Failed to initialize a session: {e}"
                     ))
                 })?;
-            (config, session)
+            (config, session, plonk_version_guard, hard_fork_guard)
         };
         let receipt = execute(&mut session, &tx, &config);
         let resp = match receipt {

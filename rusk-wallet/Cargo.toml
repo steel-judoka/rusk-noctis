@@ -1,6 +1,6 @@
 [package]
 name = "rusk-wallet"
-version = "0.2.1-dev"
+version = "0.3.0"
 autobins = false
 description = "A library providing functionalities to create wallets compatible with Dusk"
 categories = ["cryptography", "cryptography::cryptocurrencies"]
@@ -57,7 +57,7 @@ tracing-subscriber = { workspace = true, features = [
     "json",
 ] }
 
-rkyv = { workspace = true }
+rkyv = { workspace = true, features = ["validation"] }
 inquire = { workspace = true }
 konst = { workspace = true }
 pbkdf2 = { workspace = true }

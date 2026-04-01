@@ -20,6 +20,7 @@ use dusk_consensus::operations::{
     StateTransitionData, StateTransitionResult, Voter,
 };
 use dusk_core::abi::{ContractId, Event};
+use dusk_core::plonk::PlonkVersion;
 use dusk_core::signatures::bls::PublicKey as BlsPublicKey;
 use dusk_core::stake::{
     Reward, RewardReason, STAKE_CONTRACT, StakeData, StakeKeys,
@@ -34,17 +35,56 @@ use dusk_vm::{CallReceipt, Error as VMError, Session, VM, execute};
 #[cfg(feature = "archive")]
 use node::archive::Archive;
 use node_data::events::contract::ContractTxEvent;
+use node_data::hard_fork::HardFork;
 use node_data::ledger::{Block, Slash, SpentTransaction, Transaction, to_str};
 use parking_lot::RwLock;
+use rkyv::Deserialize;
 use rusk_profile::to_rusk_state_id_path;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::RuskVmConfig;
 use crate::bloom::Bloom;
 use crate::node::driverstore::DriverStore;
-use crate::node::{RuesEvent, Rusk, RuskTip, get_block_rewards};
+use crate::node::{
+    FEATURE_HARDFORK_AEGIS, FEATURE_PLONK_V2, RuesEvent, Rusk, RuskTip,
+    get_block_rewards, set_vm_host_context,
+};
 use crate::{DUSK_CONSENSUS_KEY, Error as RuskError, Result};
+
+fn hard_fork_aegis_activation(vm_config: &RuskVmConfig) -> u64 {
+    match vm_config.feature(FEATURE_HARDFORK_AEGIS) {
+        Some(dusk_vm::FeatureActivation::Height(height)) => *height,
+        Some(dusk_vm::FeatureActivation::Ranges(ranges)) => ranges
+            .iter()
+            .map(|(start, _)| *start)
+            .min()
+            .unwrap_or(u64::MAX),
+        None => u64::MAX,
+    }
+}
+
+pub(super) fn plonk_version_at(
+    vm_config: &RuskVmConfig,
+    block_height: u64,
+    hard_fork: HardFork,
+) -> PlonkVersion {
+    match hard_fork {
+        HardFork::PreFork => {
+            let plonk_v2_active = vm_config
+                .feature(FEATURE_PLONK_V2)
+                .map(|activation| activation.is_active_at(block_height))
+                .unwrap_or(false);
+
+            if plonk_v2_active {
+                PlonkVersion::V2
+            } else {
+                PlonkVersion::V1
+            }
+        }
+        HardFork::Aegis => PlonkVersion::V3,
+    }
+}
 
 impl Rusk {
     #[allow(clippy::too_many_arguments)]
@@ -60,6 +100,11 @@ impl Rusk {
     ) -> Result<Self> {
         let dir = dir.as_ref();
         info!("Using state from {dir:?}");
+
+        let hard_fork_aegis_activation = hard_fork_aegis_activation(&vm_config);
+        node_data::hard_fork::set_aegis_activation_height(
+            hard_fork_aegis_activation,
+        );
 
         let commit_id_path = to_rusk_state_id_path(dir);
 
@@ -126,6 +171,9 @@ impl Rusk {
         let prev_state = transition_data.prev_state_root;
 
         let cert_voters = &transition_data.cert_voters[..];
+
+        let (_plonk_version_guard, _hard_fork_guard) =
+            set_vm_host_context(&self.vm_config, block_height);
 
         info!(
             event = "Creating state transition",
@@ -399,9 +447,13 @@ impl Rusk {
         let (sender, receiver) = mpsc::channel();
         self.feeder_query(STAKE_CONTRACT, "stakes", &(), sender, base_commit)?;
         Ok(receiver.into_iter().map(|bytes| {
-            rkyv::from_bytes::<(StakeKeys, StakeData)>(&bytes).expect(
-                "The contract should only return (StakeKeys, StakeData) tuples",
+            let root = rkyv::check_archived_root::<(StakeKeys, StakeData)>(
+                &bytes,
             )
+            .expect(
+                "The contract should only return (StakeKeys, StakeData) tuples",
+            );
+            root.deserialize(&mut rkyv::Infallible).unwrap()
         }))
     }
 
@@ -421,9 +473,11 @@ impl Rusk {
         )?;
 
         Ok(receiver.into_iter().map(|bytes| {
-            let from_bytes = rkyv::from_bytes::<(AccountData, [u8; 193])>(&bytes).expect(
-                "The contract should only return (AccountData, [u8; 193]) tuples",
-            );
+            let root =
+                rkyv::check_archived_root::<(AccountData, [u8; 193])>(&bytes)
+                    .expect("The contract should only return (AccountData, [u8; 193]) tuples");
+            let from_bytes: (AccountData, [u8; 193]) =
+                root.deserialize(&mut rkyv::Infallible).unwrap();
             unsafe {
             (from_bytes.0, BlsPublicKey::from_slice_unchecked(&from_bytes.1))
             }
@@ -482,9 +536,10 @@ impl Rusk {
             base_commit,
         )?;
         Ok(receiver.into_iter().map(|bytes| {
-            rkyv::from_bytes::<(BlsPublicKey, Option<StakeData>)>(&bytes).expect(
-                "The contract should only return (pk, Option<stake_data>) tuples",
-            )
+            let root =
+                rkyv::check_archived_root::<(BlsPublicKey, Option<StakeData>)>(&bytes)
+                    .expect("The contract should only return (pk, Option<stake_data>) tuples");
+            root.deserialize(&mut rkyv::Infallible).unwrap()
         }).collect())
     }
 
@@ -614,6 +669,9 @@ impl Rusk {
         let block_hash = blk.header().hash;
         let gas_limit = blk.header().gas_limit;
         let txs = blk.txs();
+
+        let (_plonk_version_guard, _hard_fork_guard) =
+            set_vm_host_context(&self.vm_config, block_height);
 
         let generator_bytes = blk.header().generator_bls_pubkey;
         let generator = BlsPublicKey::from_slice(&generator_bytes.0)
@@ -878,7 +936,8 @@ fn slash(session: &mut Session, slashes: Vec<Slash>) -> Result<Vec<Event>> {
     let mut events = vec![];
     for s in slashes {
         let provisioner = s.provisioner.into_inner();
-        let r = match s.r#type {
+        let slash_type = format!("{:?}", s.r#type);
+        let call = match s.r#type {
             node_data::ledger::SlashType::Soft => session.call::<_, ()>(
                 STAKE_CONTRACT,
                 "slash",
@@ -902,8 +961,51 @@ fn slash(session: &mut Session, slashes: Vec<Slash>) -> Result<Vec<Event>> {
                     u64::MAX,
                 )
             }
-        }?;
-        events.extend(r.events);
+        };
+
+        match call {
+            Ok(r) => events.extend(r.events),
+            Err(VMError::Panic(msg)) if is_missing_stake_slash_panic(&msg) => {
+                warn!(
+                    event = "Slash skipped",
+                    reason = "missing stake for slash target",
+                    slash_type = %slash_type,
+                    panic = %msg
+                );
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
     Ok(events)
+}
+
+fn is_missing_stake_slash_panic(msg: &str) -> bool {
+    msg.contains("The stake to slash should exist")
+        || msg.contains("The stake to hard slash should exist")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dusk_vm::FeatureActivation;
+
+    #[test]
+    fn plonk_version_tracks_prefork_and_aegis() {
+        let mut vm_config = RuskVmConfig::new();
+        vm_config
+            .with_feature(FEATURE_PLONK_V2, FeatureActivation::Height(100));
+
+        assert_eq!(
+            plonk_version_at(&vm_config, 99, HardFork::PreFork),
+            PlonkVersion::V1
+        );
+        assert_eq!(
+            plonk_version_at(&vm_config, 100, HardFork::PreFork),
+            PlonkVersion::V2
+        );
+        assert_eq!(
+            plonk_version_at(&vm_config, 200, HardFork::Aegis),
+            PlonkVersion::V3
+        );
+    }
 }

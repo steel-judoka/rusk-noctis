@@ -6,7 +6,8 @@
 
 use dusk_bytes::Serializable as DuskSerializeble;
 use dusk_core::signatures::bls::{
-    Error as BlsSigError, MultisigPublicKey as BlsMultisigPublicKey,
+    self as core_bls, Error as BlsSigError,
+    MultisigPublicKey as BlsMultisigPublicKey,
     MultisigSignature as BlsMultisigSignature,
 };
 use dusk_core::stake::EPOCH;
@@ -15,6 +16,7 @@ use tracing::error;
 
 use super::*;
 use crate::bls::PublicKey;
+use crate::hard_fork::bls_version_at;
 use crate::message::payload::{
     Candidate, Ratification, RatificationResult, Validation, Vote,
 };
@@ -68,6 +70,8 @@ pub enum InvalidFault {
     EmergencyIteration,
     #[error("Round mismatch")]
     RoundMismatch,
+    #[error("Inner faults signer mismatch")]
+    SignerMismatch,
     #[error("Invalid Signature {0}")]
     InvalidSignature(BlsSigError),
     #[error("Generic error {0}")]
@@ -145,6 +149,19 @@ impl Fault {
         }
     }
 
+    /// Get the signers related to the inner FaultDatas.
+    fn signers(&self) -> (&PublicKey, &PublicKey) {
+        // `DoubleCandidate` carries `FaultData<Hash>` while the other variants
+        // carry `FaultData<Vote>`, so it cannot be merged into the same `|` arm.
+        match self {
+            Fault::DoubleRatificationVote(a, b)
+            | Fault::DoubleValidationVote(a, b) => {
+                (&a.sig.signer, &b.sig.signer)
+            }
+            Fault::DoubleCandidate(a, b) => (&a.sig.signer, &b.sig.signer),
+        }
+    }
+
     /// Check if both faults are related to the same consensus header and
     /// validate their signatures.
     ///
@@ -163,6 +180,12 @@ impl Fault {
         }
         if h1.prev_block_hash != h2.prev_block_hash {
             return Err(InvalidFault::PrevHashMismatch);
+        }
+
+        // Check that both fault_data are signed by the same signer.
+        let (s1, s2) = self.signers();
+        if s1 != s2 {
+            return Err(InvalidFault::SignerMismatch);
         }
 
         // Check that fault refers to different fault_data
@@ -197,38 +220,41 @@ impl Fault {
             Fault::DoubleCandidate(a, b) => {
                 let seed = Candidate::SIGN_SEED;
                 let msg = a.get_signed_data(seed);
-                Self::verify_signature(&a.sig, &msg)?;
+                Self::verify_signature(a.header.round, &a.sig, &msg)?;
                 let msg = b.get_signed_data(seed);
-                Self::verify_signature(&b.sig, &msg)?;
+                Self::verify_signature(b.header.round, &b.sig, &msg)?;
                 Ok(())
             }
             Fault::DoubleRatificationVote(a, b) => {
                 let seed = Ratification::SIGN_SEED;
                 let msg = a.get_signed_data(seed);
-                Self::verify_signature(&a.sig, &msg)?;
+                Self::verify_signature(a.header.round, &a.sig, &msg)?;
                 let msg = b.get_signed_data(seed);
-                Self::verify_signature(&b.sig, &msg)?;
+                Self::verify_signature(b.header.round, &b.sig, &msg)?;
                 Ok(())
             }
             Fault::DoubleValidationVote(a, b) => {
                 let seed = Validation::SIGN_SEED;
                 let msg = a.get_signed_data(seed);
-                Self::verify_signature(&a.sig, &msg)?;
+                Self::verify_signature(a.header.round, &a.sig, &msg)?;
                 let msg = b.get_signed_data(seed);
-                Self::verify_signature(&b.sig, &msg)?;
+                Self::verify_signature(b.header.round, &b.sig, &msg)?;
                 Ok(())
             }
         }
     }
 
     fn verify_signature(
+        block_height: u64,
         sign_info: &SignInfo,
         msg: &[u8],
     ) -> Result<(), BlsSigError> {
-        let signature = sign_info.signature.inner();
-        let sig = BlsMultisigSignature::from_bytes(signature)?;
-        let pk = BlsMultisigPublicKey::aggregate(&[*sign_info.signer.inner()])?;
-        pk.verify(&sig, msg)
+        let bls_version = bls_version_at(block_height);
+        let sig =
+            BlsMultisigSignature::from_bytes(sign_info.signature.inner())?;
+        let apk =
+            core_bls::aggregate(&[*sign_info.signer.inner()], bls_version)?;
+        core_bls::verify_multisig(&apk, &sig, msg, bls_version)
     }
 }
 
@@ -403,5 +429,53 @@ impl From<&Fault> for Slash {
             provisioner,
             r#type: slash_type,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn header() -> ConsensusHeader {
+        ConsensusHeader {
+            prev_block_hash: [7; 32],
+            round: 10,
+            iteration: 1,
+        }
+    }
+
+    fn fault_data(signer_seed: u64, vote: Vote) -> FaultData<Vote> {
+        FaultData {
+            header: header(),
+            sig: SignInfo {
+                signer: PublicKey::from_sk_seed_u64(signer_seed),
+                signature: Signature::default(),
+            },
+            data: vote,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_signers() {
+        let a = fault_data(1, Vote::Valid([1; 32]));
+        let b = fault_data(2, Vote::Valid([2; 32]));
+        let fault = Fault::DoubleValidationVote(a, b);
+
+        let err = fault
+            .validate(10)
+            .expect_err("fault with mismatched signers must be rejected");
+        assert!(matches!(err, InvalidFault::SignerMismatch));
+    }
+
+    #[test]
+    fn validate_does_not_report_signer_mismatch_for_same_signer() {
+        let a = fault_data(1, Vote::Valid([1; 32]));
+        let b = fault_data(1, Vote::Valid([2; 32]));
+        let fault = Fault::DoubleValidationVote(a, b);
+
+        let err = fault.validate(10).expect_err(
+            "fault with same signer still has invalid test signatures",
+        );
+        assert!(matches!(err, InvalidFault::InvalidSignature(_)));
     }
 }

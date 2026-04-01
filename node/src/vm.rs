@@ -59,6 +59,7 @@ pub trait VMExecution: Send + Sync + 'static {
     fn preverify(
         &self,
         tx: &Transaction,
+        tip_height: u64,
     ) -> anyhow::Result<PreverificationResult>;
 
     fn get_provisioners(
@@ -99,6 +100,7 @@ pub trait VMExecution: Send + Sync + 'static {
     fn wasm64_disabled(&self, block_height: u64) -> bool;
     fn wasm32_disabled(&self, block_height: u64) -> bool;
     fn third_party_disabled(&self, block_height: u64) -> bool;
+    fn phoenix_refund_check_active(&self, block_height: u64) -> bool;
 
     fn shade_3rd_party(&self, contract_id: ContractId) -> anyhow::Result<()>;
     fn enable_3rd_party(&self, contract_id: ContractId) -> anyhow::Result<()>;

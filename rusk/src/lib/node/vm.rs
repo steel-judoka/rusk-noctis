@@ -22,8 +22,10 @@ use dusk_core::stake::StakeData;
 use dusk_core::transfer::Transaction as ProtocolTransaction;
 use node::vm::{PreverificationResult, VMExecution};
 use node_data::bls::PublicKey;
+use node_data::hard_fork::{bls_version_at, hard_fork_at};
 use node_data::ledger::{Block, Header, SpentTransaction, Transaction};
 
+use super::rusk::plonk_version_at;
 use super::{RuesEvent, Rusk};
 pub use config::Config as RuskVmConfig;
 pub use config::feature::*;
@@ -142,6 +144,7 @@ impl VMExecution for Rusk {
     fn preverify(
         &self,
         tx: &Transaction,
+        tip_height: u64,
     ) -> anyhow::Result<PreverificationResult> {
         info!("Received preverify request");
         let tx = &tx.inner;
@@ -165,7 +168,14 @@ impl VMExecution for Rusk {
                     return Err(anyhow::anyhow!("{err}"));
                 }
 
-                match crate::verifier::verify_proof(tx) {
+                let next_block_height = tip_height.saturating_add(1);
+                let version = plonk_version_at(
+                    &self.vm_config,
+                    next_block_height,
+                    hard_fork_at(next_block_height),
+                );
+
+                match crate::verifier::verify_proof_with_version(tx, version) {
                     Ok(true) => Ok(PreverificationResult::Valid),
                     Ok(false) => Err(anyhow::anyhow!("Invalid proof")),
                     Err(e) => {
@@ -174,6 +184,7 @@ impl VMExecution for Rusk {
                 }
             }
             ProtocolTransaction::Moonlight(tx) => {
+                let next_block_height = tip_height.saturating_add(1);
                 let account_data = self.account(tx.sender()).map_err(|e| {
                     anyhow::anyhow!("Cannot check account: {e}")
                 })?;
@@ -209,14 +220,18 @@ impl VMExecution for Rusk {
                     PreverificationResult::Valid
                 };
 
-                match crate::verifier::verify_signature(
-                    tx.blob_to_memo().as_ref().unwrap_or(tx),
-                ) {
-                    Ok(true) => Ok(result),
-                    Ok(false) => Err(anyhow::anyhow!("Invalid signature")),
-                    Err(e) => {
-                        Err(anyhow::anyhow!("Cannot verify the signature: {e}"))
-                    }
+                let blob_converted = tx.blob_to_memo();
+                let verify_tx = blob_converted.as_ref().unwrap_or(tx);
+                let verify_result = dusk_core::signatures::bls::verify(
+                    verify_tx.sender(),
+                    verify_tx.signature(),
+                    &verify_tx.signature_message(),
+                    bls_version_at(next_block_height),
+                );
+
+                match verify_result {
+                    Ok(()) => Ok(result),
+                    Err(_) => Err(anyhow::anyhow!("Invalid signature")),
                 }
             }
         }
@@ -319,6 +334,13 @@ impl VMExecution for Rusk {
     fn third_party_disabled(&self, block_height: u64) -> bool {
         self.vm_config
             .feature(FEATURE_DISABLE_3RD_PARTY)
+            .map(|activation| activation.is_active_at(block_height))
+            .unwrap_or(false)
+    }
+
+    fn phoenix_refund_check_active(&self, block_height: u64) -> bool {
+        self.vm_config
+            .feature(FEATURE_HARDFORK_AEGIS)
             .map(|activation| activation.is_active_at(block_height))
             .unwrap_or(false)
     }
